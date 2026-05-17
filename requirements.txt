@@ -6,3 +6,5 @@ requests
 cloudscraper
 tzlocal
 fake-useragent
+beautifulsoup4
+bs4
