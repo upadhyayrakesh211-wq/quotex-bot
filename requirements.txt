@@ -1,0 +1,8 @@
+python-telegram-bot==20.7
+pandas
+numpy
+websocket-client
+requests
+cloudscraper
+tzlocal
+fake-useragent
