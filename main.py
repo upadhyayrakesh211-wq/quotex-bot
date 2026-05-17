@@ -2,6 +2,15 @@ import asyncio
 import logging
 import os
 import sys
+import httpx
+
+# Proxy argument patch — pyquotex compatibility fix
+original_init = httpx.AsyncClient.__init__
+def patched_init(self, *args, **kwargs):
+    kwargs.pop('proxy', None)
+    original_init(self, *args, **kwargs)
+httpx.AsyncClient.__init__ = patched_init
+
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -15,10 +24,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ============================================================
 # APNI DETAILS YAHAN DAALO
 # ============================================================
-QUOTEX_EMAIL    = os.environ.get("QUOTEX_EMAIL", "aapka_email@gmail.com")
-QUOTEX_PASSWORD = os.environ.get("QUOTEX_PASSWORD", "aapka_password")
-TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN", "aapka_telegram_token")
-CHAT_ID         = int(os.environ.get("CHAT_ID", "aapka_chat_id"))
+QUOTEX_EMAIL    = os.environ.get("QUOTEX_EMAIL", "kkvv65473@gmail.com")
+QUOTEX_PASSWORD = os.environ.get("QUOTEX_PASSWORD", "kkvv@12345")
+TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN", "8847055481:AAGN50WHuD1VJDE_c9e7PZhh6cTUu8aVQEU")
+CHAT_ID         = int(os.environ.get("5535893135", "0"))
 # ============================================================
 
 logging.basicConfig(level=logging.INFO)
@@ -53,21 +62,21 @@ def calculate_bollinger(prices, period=20):
 def get_signal(candles):
     if len(candles) < 25:
         return None
-    
+
     closes = [c['close'] for c in candles]
     rsi = calculate_rsi(closes)
     rsi_val = rsi.iloc[-1]
     upper, mid, lower = calculate_bollinger(closes)
     price = closes[-1]
-    
+
     # CALL signal — RSI oversold + price near lower band
     if rsi_val < 35 and price <= lower * 1.001:
         return "call", round(rsi_val, 1), round(price, 5)
-    
+
     # PUT signal — RSI overbought + price near upper band
     if rsi_val > 65 and price >= upper * 0.999:
         return "put", round(rsi_val, 1), round(price, 5)
-    
+
     return None
 
 # ============================================================
@@ -89,24 +98,24 @@ async def get_client():
 async def trading_loop(bot: Bot):
     global bot_running, trade_stats
     await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot shuru ho gaya! Signals dhundh raha hoon...")
-    
+
     while bot_running:
         try:
             q = await get_client()
-            
+
             for asset in ASSETS:
                 if not bot_running:
                     break
-                
+
                 candles = await q.get_historical_candles(asset, TIMEFRAME)
                 result = get_signal(candles)
-                
+
                 if result:
                     direction, rsi_val, price = result
-                    
+
                     # Trade place karo
                     success, trade_id = await q.buy(TRADE_AMOUNT, asset, direction, TIMEFRAME)
-                    
+
                     if success:
                         emoji = "🟢" if direction == "call" else "🔴"
                         msg = (
@@ -119,22 +128,22 @@ async def trading_loop(bot: Bot):
                             f"Time: {datetime.now().strftime('%H:%M:%S')}"
                         )
                         await bot.send_message(chat_id=CHAT_ID, text=msg)
-                        
+
                         # Result check karo (1 min baad)
                         await asyncio.sleep(65)
                         profit = await q.check_win(trade_id)
-                        
+
                         if profit > 0:
                             trade_stats["wins"] += 1
                             await bot.send_message(chat_id=CHAT_ID, text=f"✅ WIN! +${profit:.2f}")
                         else:
                             trade_stats["losses"] += 1
                             await bot.send_message(chat_id=CHAT_ID, text=f"❌ LOSS! -${TRADE_AMOUNT}")
-                        
+
                         trade_stats["total"] += 1
-            
+
             await asyncio.sleep(30)  # 30 sec baad dobara scan
-            
+
         except Exception as e:
             logger.error(f"Error: {e}")
             await bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Error: {str(e)[:100]}")
@@ -217,7 +226,7 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("status", status))
-    
+
     logger.info("Bot chal raha hai...")
     app.run_polling()
 
