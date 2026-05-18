@@ -2,18 +2,30 @@ import asyncio
 import logging
 import os
 import sys
+from datetime import datetime
+
+# ============================================================
+# PROXY PATCH — Sabse pehle karo
+# ============================================================
 import httpx
 
-# Proxy argument patch — pyquotex compatibility fix
-original_init = httpx.AsyncClient.__init__
-def patched_init(self, *args, **kwargs):
+_original_async_init = httpx.AsyncClient.__init__
+def _patched_async_init(self, *args, **kwargs):
     kwargs.pop('proxy', None)
-    original_init(self, *args, **kwargs)
-httpx.AsyncClient.__init__ = patched_init
+    kwargs.pop('proxies', None)
+    _original_async_init(self, *args, **kwargs)
+httpx.AsyncClient.__init__ = _patched_async_init
+
+_original_sync_init = httpx.Client.__init__
+def _patched_sync_init(self, *args, **kwargs):
+    kwargs.pop('proxy', None)
+    kwargs.pop('proxies', None)
+    _original_sync_init(self, *args, **kwargs)
+httpx.Client.__init__ = _patched_sync_init
+# ============================================================
 
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 sys.path.insert(0, '/app/pyquotex')
 
@@ -22,7 +34,7 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# APNI DETAILS YAHAN DAALO
+# CONFIG
 # ============================================================
 QUOTEX_EMAIL    = os.environ.get("QUOTEX_EMAIL", "kkvv65473@gmail.com")
 QUOTEX_PASSWORD = os.environ.get("QUOTEX_PASSWORD", "kkvv@12345")
@@ -38,8 +50,8 @@ bot_running = False
 trade_stats = {"wins": 0, "losses": 0, "total": 0}
 
 ASSETS = ["EURUSD_otc", "GBPUSD_otc", "AUDCAD_otc"]
-TIMEFRAME = 60  # 1 minute
-TRADE_AMOUNT = 1  # $1 per trade
+TIMEFRAME = 60
+TRADE_AMOUNT = 1
 
 # ============================================================
 # STRATEGY — RSI + Bollinger Bands
@@ -62,21 +74,16 @@ def calculate_bollinger(prices, period=20):
 def get_signal(candles):
     if len(candles) < 25:
         return None
-
     closes = [c['close'] for c in candles]
     rsi = calculate_rsi(closes)
     rsi_val = rsi.iloc[-1]
     upper, mid, lower = calculate_bollinger(closes)
     price = closes[-1]
 
-    # CALL signal — RSI oversold + price near lower band
     if rsi_val < 35 and price <= lower * 1.001:
         return "call", round(rsi_val, 1), round(price, 5)
-
-    # PUT signal — RSI overbought + price near upper band
     if rsi_val > 65 and price >= upper * 0.999:
         return "put", round(rsi_val, 1), round(price, 5)
-
     return None
 
 # ============================================================
@@ -84,13 +91,18 @@ def get_signal(candles):
 # ============================================================
 async def get_client():
     global client
-    if client is None:
-        client = Quotex(email=QUOTEX_EMAIL, password=QUOTEX_PASSWORD)
-    check, reason = await client.connect()
-    if not check:
-        raise Exception(f"Connection failed: {reason}")
-    await client.change_account("PRACTICE")
-    return client
+    try:
+        if client is None:
+            client = Quotex(email=QUOTEX_EMAIL, password=QUOTEX_PASSWORD)
+        check, reason = await client.connect()
+        if not check:
+            client = None
+            raise Exception(f"Connection failed: {reason}")
+        await client.change_account("PRACTICE")
+        return client
+    except Exception as e:
+        client = None
+        raise e
 
 # ============================================================
 # BOT LOOP
@@ -106,48 +118,48 @@ async def trading_loop(bot: Bot):
             for asset in ASSETS:
                 if not bot_running:
                     break
+                try:
+                    candles = await q.get_historical_candles(asset, TIMEFRAME)
+                    result = get_signal(candles)
 
-                candles = await q.get_historical_candles(asset, TIMEFRAME)
-                result = get_signal(candles)
+                    if result:
+                        direction, rsi_val, price = result
+                        success, trade_id = await q.buy(TRADE_AMOUNT, asset, direction, TIMEFRAME)
 
-                if result:
-                    direction, rsi_val, price = result
+                        if success:
+                            emoji = "🟢" if direction == "call" else "🔴"
+                            msg = (
+                                f"{emoji} TRADE PLACED!\n"
+                                f"Asset: {asset}\n"
+                                f"Direction: {direction.upper()}\n"
+                                f"Amount: ${TRADE_AMOUNT}\n"
+                                f"RSI: {rsi_val}\n"
+                                f"Price: {price}\n"
+                                f"Time: {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            await bot.send_message(chat_id=CHAT_ID, text=msg)
 
-                    # Trade place karo
-                    success, trade_id = await q.buy(TRADE_AMOUNT, asset, direction, TIMEFRAME)
+                            await asyncio.sleep(65)
+                            profit = await q.check_win(trade_id)
 
-                    if success:
-                        emoji = "🟢" if direction == "call" else "🔴"
-                        msg = (
-                            f"{emoji} TRADE PLACED!\n"
-                            f"Asset: {asset}\n"
-                            f"Direction: {direction.upper()}\n"
-                            f"Amount: ${TRADE_AMOUNT}\n"
-                            f"RSI: {rsi_val}\n"
-                            f"Price: {price}\n"
-                            f"Time: {datetime.now().strftime('%H:%M:%S')}"
-                        )
-                        await bot.send_message(chat_id=CHAT_ID, text=msg)
+                            if profit > 0:
+                                trade_stats["wins"] += 1
+                                await bot.send_message(chat_id=CHAT_ID, text=f"✅ WIN! +${profit:.2f}")
+                            else:
+                                trade_stats["losses"] += 1
+                                await bot.send_message(chat_id=CHAT_ID, text=f"❌ LOSS! -${TRADE_AMOUNT}")
 
-                        # Result check karo (1 min baad)
-                        await asyncio.sleep(65)
-                        profit = await q.check_win(trade_id)
+                            trade_stats["total"] += 1
+                except Exception as asset_err:
+                    logger.error(f"Asset {asset} error: {asset_err}")
+                    continue
 
-                        if profit > 0:
-                            trade_stats["wins"] += 1
-                            await bot.send_message(chat_id=CHAT_ID, text=f"✅ WIN! +${profit:.2f}")
-                        else:
-                            trade_stats["losses"] += 1
-                            await bot.send_message(chat_id=CHAT_ID, text=f"❌ LOSS! -${TRADE_AMOUNT}")
-
-                        trade_stats["total"] += 1
-
-            await asyncio.sleep(30)  # 30 sec baad dobara scan
+            await asyncio.sleep(30)
 
         except Exception as e:
-            logger.error(f"Error: {e}")
-            await bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Error: {str(e)[:100]}")
-            await asyncio.sleep(10)
+            logger.error(f"Loop error: {e}")
+            await bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Error: {str(e)[:100]}\nDobara try kar raha hoon...")
+            await asyncio.sleep(15)
 
 # ============================================================
 # TELEGRAM COMMANDS
@@ -190,7 +202,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = await q.get_balance()
         await update.message.reply_text(f"💰 Demo Balance: ${bal:.2f}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != CHAT_ID:
@@ -228,7 +240,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
 
     logger.info("Bot chal raha hai...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
